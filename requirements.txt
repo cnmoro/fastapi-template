@@ -1,0 +1,15 @@
+pydantic[email]
+fastapi
+uvicorn
+motor
+httptools
+uvloop
+python-dotenv
+python-multipart
+python-jose
+httpx
+orjson
+bcrypt
+PyJWT
+gunicorn
+anyio
