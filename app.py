@@ -8,7 +8,6 @@ from fastapi.responses import ORJSONResponse
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 
-from services.http_client import close_http_client
 from services.db import close_mongo_client, ensure_indexes
 
 from routers.authentication import auth_router
@@ -22,7 +21,6 @@ async def lifespan(app: FastAPI):
     limiter.total_tokens = 150
     await ensure_indexes()
     yield
-    await close_http_client()
     close_mongo_client()
 
 app = FastAPI(

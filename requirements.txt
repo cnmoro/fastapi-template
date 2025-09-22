@@ -7,7 +7,7 @@ uvloop
 python-dotenv
 python-multipart
 python-jose
-httpx
+aiohttp
 orjson
 bcrypt
 PyJWT

@@ -1,7 +1,7 @@
 from fastapi.responses import StreamingResponse
 from services.util import timed_lru_cache
 from services.db import get_database
-import json
+import json, aiohttp
 
 async def get_all_user_emails():
     """Get all user emails using Motor."""
@@ -33,3 +33,10 @@ async def get_all_user_ids_cached():
                     .find({}, {"_id": 1})\
                         .to_list(length=None)
     return [ str(r["_id"]) for r in results ]
+
+async def sample_async_http_request():
+    url = "https://www.bbc.com/"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.text()
