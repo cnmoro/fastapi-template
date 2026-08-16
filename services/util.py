@@ -122,15 +122,13 @@ def timed_lru_cache(max_size: int, minutes: float):
         def _clear_expired():
             """Helper to remove expired items from cache."""
             current_time = time.time()
-            # Iterate over a copy of keys to allow modification during iteration
+            # Iterate over a copy of keys to allow modification during iteration.
+            # No early exit: the order is least-recently-used, not insertion time,
+            # so expired items may sit behind fresh ones.
             for k in list(cache.keys()):
                 cached_time, _ = cache[k]
                 if current_time - cached_time > expiration_time:
                     cache.pop(k, None)
-                else:
-                    # Since OrderedDict keeps insertion order, once we hit a
-                    # non-expired item, the rest are also likely non-expired
-                    break
 
         def _update_cache(key, result):
              """Helper to update cache and enforce size limit."""

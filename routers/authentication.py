@@ -31,6 +31,7 @@ async def get_current_user_token_data(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+@auth_router.get("/me", response_model=UserResponse)
 async def get_current_user_ep(
     token_data: TokenData = Depends(get_current_user_token_data)
 ) -> UserResponse:

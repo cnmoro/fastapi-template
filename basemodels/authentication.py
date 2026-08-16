@@ -1,10 +1,13 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 from typing import Optional
 
+# bcrypt refuses passwords longer than 72 bytes
+Password = Field(min_length=8, max_length=72)
+
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Password
     full_name: Optional[str] = None
 
 class UserResponse(BaseModel):
@@ -23,4 +26,4 @@ class TokenData(BaseModel):
 
 class PasswordUpdate(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Password

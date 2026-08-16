@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 
 from services.db import close_mongo_client, ensure_indexes
+from services.http import close_http_session
 
 from routers.authentication import auth_router
 from routers.example import example_router
@@ -21,14 +22,16 @@ async def lifespan(app: FastAPI):
     limiter.total_tokens = 150
     await ensure_indexes()
     yield
-    close_mongo_client()
+    await close_http_session()
+    await close_mongo_client()
 
 app = FastAPI(
     lifespan=lifespan,
     default_response_class=ORJSONResponse
 )
 
-app.add_middleware(GZipMiddleware, minimum_size=5000)
+# level 9 costs ~2x the CPU of level 5 for ~0.2% better ratio
+app.add_middleware(GZipMiddleware, minimum_size=5000, compresslevel=5)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], # Change this

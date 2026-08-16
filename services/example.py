@@ -1,10 +1,11 @@
 from fastapi.responses import StreamingResponse
 from services.util import timed_lru_cache
+from services.http import get_http_session
 from services.db import get_database
-import json, aiohttp
+import json
 
 async def get_all_user_emails():
-    """Get all user emails using Motor."""
+    """Get all user emails using async PyMongo."""
     results = await get_database()['USERS']\
                     .find({}, {"email": 1, "_id": 0})\
                         .to_list(length=None)
@@ -28,7 +29,7 @@ async def stream_json_data():
 
 @timed_lru_cache(max_size=100, minutes=60)
 async def get_all_user_ids_cached():
-    """Get all user ids using Motor."""
+    """Get all user ids using async PyMongo."""
     results = await get_database()['USERS']\
                     .find({}, {"_id": 1})\
                         .to_list(length=None)
@@ -37,6 +38,5 @@ async def get_all_user_ids_cached():
 async def sample_async_http_request():
     url = "https://www.bbc.com/"
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            return await response.text()
+    async with get_http_session().get(url) as response:
+        return await response.text()

@@ -1,12 +1,11 @@
 pydantic[email]
 fastapi
 uvicorn
-motor
+pymongo>=4.13
 httptools
 uvloop
 python-dotenv
 python-multipart
-python-jose
 aiohttp
 orjson
 bcrypt

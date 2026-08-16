@@ -1,7 +1,8 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from bson import ObjectId
 import bcrypt
+import anyio
 import jwt
 import os
 
@@ -17,25 +18,36 @@ JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 120)
 )
 
+if not JWT_SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY is not set")
+
 class AuthenticationError(Exception):
     pass
 
-def _hash_password(password: str) -> str:
-    """Hash a password using bcrypt."""
+def _hash_password_sync(password: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
-def _verify_password(password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash."""
+def _verify_password_sync(password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+# bcrypt burns ~150ms of CPU per call, which would block the whole event loop.
+# It releases the GIL, so a worker thread gives real parallelism.
+async def _hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    return await anyio.to_thread.run_sync(_hash_password_sync, password)
+
+async def _verify_password(password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash."""
+    return await anyio.to_thread.run_sync(_verify_password_sync, password, hashed_password)
 
 def _create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token."""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
@@ -63,21 +75,22 @@ async def create_user(user_data: UserCreate) -> UserResponse:
     """Create a new user."""
     # Check if user already exists
     users_collection = get_database()['USERS']
-    
-    existing_user = await users_collection.find_one({"email": user_data.email})
+    email = user_data.email.lower()
+
+    existing_user = await users_collection.find_one({"email": email})
     if existing_user:
         raise AuthenticationError("User with this email already exists")
 
     # Hash the password
-    hashed_password = _hash_password(user_data.password)
+    hashed_password = await _hash_password(user_data.password)
 
     # Create user document
     user_doc = {
-        "email": user_data.email,
+        "email": email,
         "password": hashed_password,
         "full_name": user_data.full_name,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
     }
 
     # Insert user into database
@@ -97,12 +110,12 @@ async def authenticate_user(email: str, password: str) -> Optional[dict]:
     """Authenticate a user with email and password."""
     users_collection = get_database()['USERS']
     
-    user = await users_collection.find_one({"email": email})
-    
+    user = await users_collection.find_one({"email": email.lower()})
+
     if not user:
         return None
     
-    if not _verify_password(password, user["password"]):
+    if not await _verify_password(password, user["password"]):
         return None
     
     return user
@@ -155,11 +168,11 @@ async def update_password(user_id: str, password_data: PasswordUpdate) -> bool:
         raise AuthenticationError("User not found")
 
     # Verify current password
-    if not _verify_password(password_data.current_password, user["password"]):
+    if not await _verify_password(password_data.current_password, user["password"]):
         raise AuthenticationError("Current password is incorrect")
 
     # Hash new password
-    new_hashed_password = _hash_password(password_data.new_password)
+    new_hashed_password = await _hash_password(password_data.new_password)
 
     # Update password in database
     result = await users_collection.update_one(
@@ -167,7 +180,7 @@ async def update_password(user_id: str, password_data: PasswordUpdate) -> bool:
         {
             "$set": {
                 "password": new_hashed_password,
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(timezone.utc)
             }
         }
     )
