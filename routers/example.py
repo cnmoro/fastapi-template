@@ -3,12 +3,47 @@ from fastapi.responses import StreamingResponse
 
 from basemodels.authentication import TokenData
 from routers.authentication import get_current_user_token_data
-from services.example import get_all_user_emails, get_all_user_ids_cached, stream_json_data
+from services.example import build_report, get_all_user_emails, \
+    get_all_user_ids_cached, stream_json_data, ReportOptions
 from services.util import _response
+from services.rbac import Role, require_roles
 
-import asyncio
+import asyncio, time
 
 example_router = APIRouter(prefix="/example", tags=["Example"])
+
+@example_router.get(
+    "/admin_only",
+    dependencies=[Depends(require_roles(Role.ADMIN))]
+)
+async def admin_only():
+    """Example of a role-guarded endpoint. Add Depends(require_roles(...)) to
+    any route; pass several roles for any-of, or require_all=True for all-of."""
+    return {"message": "You are an admin."}
+
+@example_router.post("/cached_report")
+async def cached_report(
+    filters: dict,
+    tags: list[str],
+    currency: str = "USD",
+    token_data: TokenData = Depends(get_current_user_token_data)
+):
+    """Showcases flexible_lru_cache: the dict/list/object arguments below are
+    unhashable, and the result survives a restart via persist=.
+
+    Call it twice with the same body - the first takes ~1s, the second is
+    instant, and it stays instant after the API restarts.
+    """
+    started = time.perf_counter()
+    report = await build_report(filters, tags, ReportOptions(currency=currency))
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    return {
+        "report": report,
+        "elapsed_ms": round(elapsed_ms, 1),
+        "cache_hit": elapsed_ms < 100,
+        "cache": build_report.cache_info()
+    }
 
 @example_router.get("/list_all_user_emails")
 async def list_all_user_emails(

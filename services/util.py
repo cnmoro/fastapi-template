@@ -1,6 +1,8 @@
-import time, inspect, sys, array, traceback
+import time, inspect, sys, array, traceback, os
 from fastapi import HTTPException, status
 from collections import OrderedDict
+from pathlib import Path
+import cloudpickle
 from types import GeneratorType
 from datetime import datetime
 from functools import wraps
@@ -86,9 +88,11 @@ def make_hashable(obj):
         except (TypeError, ValueError):
             pass
     
-    # For objects with __dict__ (custom classes), use their attributes
+    # For objects with __dict__ (custom classes), use their attributes.
+    # The type name is part of the key, so two classes that happen to share
+    # field names do not collide in the same cache.
     if hasattr(obj, '__dict__'):
-        return ('__dict__', tuple(sorted((k, make_hashable(v)) for k, v in obj.__dict__.items())))
+        return (type(obj).__name__, tuple(sorted((k, make_hashable(v)) for k, v in obj.__dict__.items())))
     
     # For objects with __slots__, try to get their values
     if hasattr(obj, '__slots__'):
@@ -96,109 +100,145 @@ def make_hashable(obj):
         for slot in obj.__slots__:
             if hasattr(obj, slot):
                 slot_values.append((slot, make_hashable(getattr(obj, slot))))
-        return ('__slots__', tuple(sorted(slot_values)))
+        return (type(obj).__name__, tuple(sorted(slot_values)))
     
     # Fallback: use string representation (not ideal but works)
     # Include type name to distinguish between objects with same repr
     return (type(obj).__name__, str(obj))
 
-def timed_lru_cache(max_size: int, minutes: float):
-    """
-    A decorator that caches function results (sync or async) up to a maximum
-    size and discards them after a specified number of minutes.
+def _cache_decorator(max_size: int, seconds: float | None, persist: str | None):
+    """Shared core for the cache decorators below.
 
-    Args:
-        max_size (int): Maximum number of items to cache.
-        minutes (float): Time in minutes after which cached items expire.
-
-    Returns:
-        Decorator function.
+    Keys go through make_hashable, so unhashable arguments (dict, list, set,
+    arbitrary objects) are cacheable. Wraps sync and async functions alike.
     """
     def decorator(func):
-        cache = OrderedDict()
-        expiration_time = minutes * 60  # Convert minutes to seconds
+        cache: OrderedDict = OrderedDict()
+        path = Path(persist) if persist else None
         is_async = inspect.iscoroutinefunction(func)
 
-        def _clear_expired():
-            """Helper to remove expired items from cache."""
-            current_time = time.time()
-            # Iterate over a copy of keys to allow modification during iteration.
-            # No early exit: the order is least-recently-used, not insertion time,
-            # so expired items may sit behind fresh ones.
-            for k in list(cache.keys()):
-                cached_time, _ = cache[k]
-                if current_time - cached_time > expiration_time:
+        def _expired(stamp: float) -> bool:
+            return seconds is not None and time.time() - stamp > seconds
+
+        if path and path.exists():
+            try:
+                cache.update(cloudpickle.loads(path.read_bytes()))
+                for k in [k for k, (stamp, _) in cache.items() if _expired(stamp)]:
                     cache.pop(k, None)
+            except Exception:
+                # A corrupt or unreadable cache file is not worth failing over
+                pass
 
-        def _update_cache(key, result):
-             """Helper to update cache and enforce size limit."""
-             current_time = time.time()
-             cache[key] = (current_time, result)
-             cache.move_to_end(key) # Mark as recently used
+        warned = False
 
-             # Enforce max size
-             if len(cache) > max_size:
-                 cache.popitem(last=False) # Remove the oldest item
+        def _save():
+            """Persistence is best-effort - an unwritable path or an unpicklable
+            value degrades to an in-memory cache rather than failing the call.
+            It says so once, so a silently broken cache file is noticeable."""
+            nonlocal warned
+            if not path:
+                return
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+                tmp.write_bytes(cloudpickle.dumps(cache))
+                os.replace(tmp, path)   # atomic, so a reader never sees half a file
+            except Exception as exc:
+                if not warned:
+                    warned = True
+                    print(f"{current_timestamp()} ~ cache persistence disabled for "
+                          f"{func.__name__} ({path}): {exc}")
+
+        def _lookup(key):
+            """Return a 1-tuple on a hit, so a cached None is still a hit."""
+            entry = cache.get(key)
+            if entry is None:
+                return None
+            stamp, value = entry
+            if _expired(stamp):
+                cache.pop(key, None)
+                return None
+            cache.move_to_end(key)
+            return (value,)
+
+        # tradeoff: re-pickles the whole dict per write and is per-process, so
+        # workers keep separate files. Move to Redis if the cache gets big or
+        # has to be shared.
+        def _store(key, value):
+            cache[key] = (time.time(), value)
+            cache.move_to_end(key)
+            if len(cache) > max_size:
+                cache.popitem(last=False)
+            _save()
+
+        def _key(args, kwargs):
+            return (make_hashable(args), make_hashable(kwargs))
 
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
             try:
-                key = (make_hashable(args), make_hashable(kwargs))
-            except Exception as e:
-                # If we can't make the arguments hashable, don't cache
-                return func(*args, **kwargs)
-            
-            _clear_expired()
+                key = _key(args, kwargs)
+            except Exception:
+                return func(*args, **kwargs)   # unkeyable, so skip the cache
 
-            if key in cache:
-                cache.move_to_end(key)
-                _, result = cache[key]
-                return result
+            hit = _lookup(key)
+            if hit is not None:
+                return hit[0]
 
             result = func(*args, **kwargs)
-            _update_cache(key, result)
+            _store(key, result)
             return result
 
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             try:
-                key = (make_hashable(args), make_hashable(kwargs))
-            except Exception as e:
-                # If we can't make the arguments hashable, don't cache
+                key = _key(args, kwargs)
+            except Exception:
                 return await func(*args, **kwargs)
-            
-            _clear_expired()
 
-            if key in cache:
-                cache.move_to_end(key)
-                _, result = cache[key]
-                return result
+            hit = _lookup(key)
+            if hit is not None:
+                return hit[0]
 
-            # Await the async function
             result = await func(*args, **kwargs)
-            _update_cache(key, result)
+            _store(key, result)
             return result
 
-        # Add cache inspection methods
         def cache_info():
-            """Return cache statistics."""
             return {
                 'size': len(cache),
                 'max_size': max_size,
-                'expiration_minutes': minutes,
-                'keys': list(cache.keys())
+                'expiration_seconds': seconds,
+                'persist': str(path) if path else None
             }
-        
+
         def cache_clear():
-            """Clear the cache."""
             cache.clear()
+            if path:
+                path.unlink(missing_ok=True)
 
         wrapper = async_wrapper if is_async else sync_wrapper
         wrapper.cache_info = cache_info
         wrapper.cache_clear = cache_clear
-        
         return wrapper
+
     return decorator
+
+def timed_lru_cache(max_size: int, minutes: float, persist: str | None = None):
+    """Cache results (sync or async) up to max_size, expiring after `minutes`.
+
+    Pass persist="path/to/file.pkl" to keep the cache across restarts; entry
+    ages are stored too, so expiry survives a restart.
+    """
+    return _cache_decorator(max_size, minutes * 60, persist)
+
+def flexible_lru_cache(max_size: int = 128, persist: str | None = None):
+    """LRU cache with no expiry that accepts *any* argument type.
+
+    functools.lru_cache raises TypeError on a dict, list, set or plain object;
+    this one keys on make_hashable(args), so those all work.
+    """
+    return _cache_decorator(max_size, None, persist)
 
 def current_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -1,8 +1,9 @@
 from fastapi.responses import StreamingResponse
-from services.util import timed_lru_cache
+from services.util import timed_lru_cache, flexible_lru_cache
 from services.http import get_http_session
 from services.db import get_database
-import json
+from dataclasses import dataclass
+import asyncio, json
 
 async def get_all_user_emails():
     """Get all user emails using async PyMongo."""
@@ -34,6 +35,25 @@ async def get_all_user_ids_cached():
                     .find({}, {"_id": 1})\
                         .to_list(length=None)
     return [ str(r["_id"]) for r in results ]
+
+@dataclass
+class ReportOptions:
+    """A plain object - functools.lru_cache cannot key on this either."""
+    currency: str = "USD"
+    include_totals: bool = True
+
+# Every argument below is unhashable, so functools.lru_cache would raise
+# TypeError. persist= keeps the results across restarts.
+@flexible_lru_cache(max_size=128, persist=".cache/reports.pkl")
+async def build_report(filters: dict, tags: list[str], options: ReportOptions):
+    """Demo of caching on arbitrary arguments. Pretends to be slow work."""
+    await asyncio.sleep(1.0)
+    return {
+        "matched": sorted(filters.items()),
+        "tags": sorted(tags),
+        "currency": options.currency,
+        "totals": {"count": len(tags)} if options.include_totals else None
+    }
 
 async def sample_async_http_request():
     url = "https://www.bbc.com/"

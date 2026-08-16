@@ -27,8 +27,11 @@ esac
 # 4. Subtract 1 from worker count, minimum 1
 WORKERS=$(( WC > 1 ? WC - 1 : 1 ))
 
-# 5. Run gunicorn
-exec gunicorn app:app \
-     -w "$WORKERS" \
-     -k uvicorn.workers.UvicornWorker \
-     -b "0.0.0.0:$PORT"
+# 5. Run uvicorn
+exec uvicorn app:app \
+     --workers "$WORKERS" \
+     --host 0.0.0.0 \
+     --port "$PORT" \
+     --loop uvloop \
+     --http httptools \
+     --no-access-log

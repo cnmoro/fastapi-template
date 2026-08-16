@@ -7,8 +7,7 @@ uvloop
 python-dotenv
 python-multipart
 aiohttp
-orjson
-bcrypt
+argon2-cffi
 PyJWT
-gunicorn
 anyio
+cloudpickle
